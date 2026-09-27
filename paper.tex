@@ -1,0 +1,371 @@
+% ============================================================
+% C2 AI for Math — paper.tex
+% 编译：pdflatex paper && bibtex paper && pdflatex paper && pdflatex paper
+% 引用全部来自 references.bib（14 篇一手文献，作者名单已逐条核验）。
+% 结构沿用老师大纲 9 节；论点：三层模型 + 语义规约层(Typed IR)。
+% ============================================================
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage[round]{natbib}
+\usepackage[T1]{fontenc}
+
+\newcommand{\IR}{\ensuremath{\mathcal{IR}}}
+\newcommand{\Nat}{\ensuremath{\mathbb{N}}}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{From Natural Language to Verifiable Reasoning:\\ A Semantic-Specification Framework for Reliable AI Mathematics}
+\author{[Student Name]\\ \small AI for Math Challenge (C2)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large language models (LLMs) can now solve a broad class of mathematical
+problems, yet they remain unreliable: a plausible chain of reasoning can
+conceal an invalid inference. We argue that reliability cannot be achieved by
+post-hoc answer verification alone, nor by direct translation from natural
+language into a formal proof assistant. Instead, we propose a three-layer
+architecture that inserts a \emph{semantic-specification layer}---a typed
+intermediate representation (\IR{})---between generation and verification. The
+\IR{} carries a type system, an operational semantics, and composable
+constraints, so that a mathematical claim is first ``compiled'' into a
+checkable artifact before it reaches a theorem prover. We define a pipeline
+(generation $\rightarrow$ semantic specification $\rightarrow$ verification)
+and a bidirectional-consistency check that ties the natural-language statement,
+the \IR{}, and the formal target to one another. We design a small but concrete
+experiment on GSM8K and MATH that measures autoformalization and proof success
+rates under this discipline. The central contribution is conceptual and
+practical: moving the locus of trust from ``does the model sound right'' to
+``does the \IR{} type-check and reduce to a proof obligation.''
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Large language models have made rapid progress on mathematical reasoning.
+Chain-of-thought prompting elicits intermediate reasoning steps
+\citep{wei2022chain}, self-consistency reduces variance by sampling many
+reasoning paths \citep{wang2022selfconsistency}, and scaling has produced
+systems such as Minerva that solve quantitative problems at a graduate level
+\citep{lewkowycz2022solving}. On the public benchmarks GSM8K
+\citep{cobbe2021training} and MATH \citep{hendrycks2021measuring}, strong
+models now answer a large fraction of problems correctly, and
+reinforcement-learning-based models such as DeepSeek-R1 demonstrate emergent
+self-verification behaviours \citep{deepseek2025r1}.
+
+These successes, however, measure \emph{answer correctness}, not
+\emph{reasoning correctness}. A model that emits a confident but invalid step
+still risks producing a wrong final answer, and on open-ended or unseen
+mathematics there is no gold label to compare against. The core reliability
+problem is therefore not ``can the model get the right number,'' but ``can we
+trust that each step is sound.''
+
+Two established remedies occupy opposite ends of a spectrum. On one end,
+\emph{verifiers} are trained to score candidate solutions
+\citep{cobbe2021training}, but they only rank plausibility and can be fooled by
+correlated errors. On the other end, \emph{formal proof assistants} such as
+Lean, Isabelle/HOL, and Coq provide machine-checkable certainty, but producing
+a formal proof is expensive: automatic formalization of natural-language
+mathematics remains hard and error-prone
+\citep{wu2022autoformalization, azerbayev2023proofnet}. There is a wide,
+under-explored gap between ``informal but fluent'' and ``formal but laborious.''
+
+We propose to close part of this gap with a \emph{semantic-specification
+layer}. Instead of jumping directly from a natural-language solution to a
+formal proof, we first translate the solution into a \emph{typed intermediate
+representation} (\IR{}) that makes the intended objects, operations, and
+invariants explicit and mechanically checkable---but without the full burden of
+a complete proof. This restates the reliability question in a tractable form:
+an answer is trusted only if its \IR{} type-checks and its proof obligations
+are dischargeable by a prover.
+
+Our contributions are threefold. \textbf{(1)} We define a minimal but
+well-typed \IR{} for elementary mathematical reasoning---a type system, an
+operational semantics, and composable constraints---that is small enough to
+reason about and rich enough to capture GSM8K/MATH-style problems.
+\textbf{(2)} We specify a three-stage pipeline
+(generation $\rightarrow$ semantic specification $\rightarrow$ verification)
+together with a \emph{bidirectional-consistency} check that keeps the natural
+language, the \IR{}, and the formal target mutually consistent. \textbf{(3)}
+We design a concrete evaluation protocol on GSM8K and MATH that measures
+autoformalization rate, type-check rate, and proof rate, following the
+measurement conventions of ProofNet and LeanDojo
+\citep{azerbayev2023proofnet, yang2023leandojo}.
+
+The rest of the paper is organized as follows. Section~\ref{sec:model}
+presents the three-layer model. Section~\ref{sec:bottleneck} analyses why
+semantic specification is the critical bottleneck. Section~\ref{sec:method}
+gives the \IR{} and the consistency checks. Section~\ref{sec:related} relates
+our work to the literature. Section~\ref{sec:applications} sketches
+applications. Section~\ref{sec:experiments} describes the experimental design,
+Section~\ref{sec:discussion} discusses limitations, and
+Section~\ref{sec:conclusion} concludes.
+\section{The Three-Layer Model}
+\label{sec:model}
+
+We model reliable AI mathematics as a pipeline with three layers, each with a
+distinct contract (Figure~\ref{fig:pipeline}).
+
+\begin{description}[leftmargin=2.2em]
+\item[Layer 1 -- Generation.] An LLM consumes a natural-language problem and
+produces a candidate solution: a mixture of informal prose and computation.
+This layer is fluent and general but has no soundness guarantee
+\citep{wei2022chain, lewkowycz2022solving}.
+\item[Layer 2 -- Semantic specification.] The candidate solution is compiled
+into a typed intermediate representation that makes explicit: which objects
+exist, which operations apply to them, what constraints hold, and which
+sub-goals remain to be proven. This layer is the focus of the paper.
+\item[Layer 3 -- Verification.] The \IR{}'s proof obligations are discharged
+by a theorem prover or a symbolic checker, yielding a machine-checkable
+certificate.
+\end{description}
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.9\linewidth}\centering
+\textbf{Generation} (LLM, natural language)\\[2pt]
+$\downarrow$ \emph{compile}\\[2pt]
+\textbf{Semantic specification} (Typed \IR{}, checkable)\\[2pt]
+$\downarrow$ \emph{reduce / discharge}\\[2pt]
+\textbf{Verification} (Lean / Isabelle / Coq, machine-checked)
+\end{minipage}}
+\caption{The three-layer pipeline. Trust enters only at the semantic
+specification layer, where the \IR{} is type-checked.}
+\label{fig:pipeline}
+\end{figure}
+
+The key separation is \emph{where trust is established}. In the common
+``LLM + verifier'' setup, trust is a probability estimated from a learned
+scorer \citep{cobbe2021training}. In the ``LLM + prover'' setup, trust is a
+proof, but the model must produce the proof in one step
+\citep{wu2022autoformalization}. Our model inserts a third, intermediate locus
+of trust: a typed artifact that can be checked mechanically and independently
+of how it was generated. This does not remove the difficulty---writing the
+compiler from natural language to \IR{} is itself hard---but it makes the
+difficulty explicit and checkable.
+
+\section{Why Semantic Specification Is the Bottleneck}
+\label{sec:bottleneck}
+
+We claim that the semantic-specification layer is the \emph{critical} part of
+the pipeline, for three reasons.
+
+First, \emph{the hard part of mathematics is not the final answer but the
+mapping from informal intent to formal object}. A word problem such as ``how
+many apples remain'' requires deciding that apples are natural numbers, that
+subtraction is the right operation, and that the result is non-negative. This
+mapping is precisely what natural language leaves implicit and what a proof
+assistant requires explicit. Errors here---wrong type, wrong operation, missing
+precondition---are the dominant failure mode of direct autoformalization
+\citep{wu2022autoformalization}.
+
+Second, \emph{post-hoc verification cannot recover from an upstream
+mis-specification}. If the model has decided to use division where
+multiplication was intended, a verifier that only scores the final answer may
+not detect the error, and may even reinforce it. Only a representation that
+fixes the intended semantics can expose the mismatch.
+
+Third, \emph{full formal proof is overkill for many downstream uses}. In
+education and rapid problem solving we often need \emph{enough} rigor to catch
+invalid steps, not a complete machine-checked proof of a difficult theorem.
+The \IR{} is designed to capture exactly this intermediate level: checkable
+rigor without full proof burden.
+\section{Method: A Typed Intermediate Representation}
+\label{sec:method}
+
+We now make the semantic-specification layer concrete. The design goal is
+\emph{minimality with expressiveness}: enough structure to catch invalid
+inferences on GSM8K/MATH-style problems, but simple enough to reason about and
+implement.
+
+\subsection{The \IR{}}
+\label{sec:ir}
+
+The \IR{} is a small typed term language over a set of sorts
+$\{\Nat, \mathbb{R}, \texttt{Bool}\}$ (extensible). Its syntax is an abstract
+syntax tree (AST) built from variables, literals, and typed operations.
+
+\begin{definition}[Typed term]
+A well-typed \IR{} term is an AST node that carries an explicit sort and whose
+children are themselves well-typed. Every operation has a type signature;
+applying an operation to arguments of the wrong sort is a \emph{type error} and
+is rejected before verification.
+\end{definition}
+
+\begin{definition}[Operational semantics]
+Each primitive operation has a small-step reduction rule. A term is
+\emph{reducible} if some subterm matches a reduction rule; a term is in
+\emph{normal form} if no rule applies and no proof obligation remains open.
+\end{definition}
+
+The crucial design element is that the \IR{} is \emph{composable}: a solution
+is a tree of smaller, independently checkable facts. This mirrors how human
+mathematicians build proofs, and it lets the checker localise a failure to the
+exact subterm that mis-typed.
+
+\begin{proposition}[Localisation]
+If an \IR{} term fails to type-check, the failing subterm can be identified in
+time linear in the size of the AST.
+\end{proposition}
+
+\subsection{From Generation to Specification}
+\label{sec:compile}
+
+The compiler from Layer~1 to Layer~2 is an LLM prompt-and-check loop, not a
+hand-written parser: the model proposes a typed AST from the natural-language
+solution, and a deterministic checker rejects it if it fails to type-check or
+violates an explicit constraint. This is the same ``propose then verify''
+discipline used in neural theorem provers
+\citep{wang2023legoprover, yang2023leandojo}, but applied one level earlier, at
+specification rather than proof.
+
+\subsection{Bidirectional Consistency}
+\label{sec:consistency}
+
+Because the \IR{} is generated, it can drift from the natural-language
+statement it is supposed to represent. We therefore require a
+\emph{bidirectional-consistency check} with two directions.
+
+\begin{itemize}
+\item \textbf{Forward check} (natural language $\rightarrow$ \IR{}): a model
+judges, for each \IR{} leaf and operation, whether it faithfully captures the
+corresponding phrase of the original problem. Disagreements are flagged as
+\emph{specification drift}.
+\item \textbf{Backward check} (\IR{} $\rightarrow$ formal target): the \IR{}'s
+proof obligations are mapped to a theorem-prover goal, and the mapping must be
+type-preserving. This check is mechanical once the target calculus is fixed.
+\end{itemize}
+
+Together these checks tie the three layers together: the natural-language
+statement, the \IR{}, and the formal target cannot silently diverge.
+\section{Related Work}
+\label{sec:related}
+
+Our work sits between two active literatures.
+
+\textbf{LLM mathematical reasoning (generation side).} Chain-of-thought
+prompting \citep{wei2022chain} and self-consistency
+\citep{wang2022selfconsistency} improve accuracy by eliciting and aggregating
+reasoning paths, but they provide no soundness guarantee. Plan-and-Solve
+prompting \citep{wang2023plan} adds explicit planning, which is conceptually
+close to our compilation step, but its plan is informal prose rather than a
+typed artifact. Verifier-based training \citep{cobbe2021training} and scaled
+systems such as Minerva \citep{lewkowycz2022solving} and DeepSeek-R1
+\citep{deepseek2025r1} raise accuracy, yet they remain probabilistic: none of
+them produces a checkable intermediate representation of the reasoning itself.
+
+\textbf{Formalisation and theorem proving (verification side).}
+Autoformalization \citep{wu2022autoformalization} and ProofNet
+\citep{azerbayev2023proofnet} study translating natural-language mathematics
+into Lean, exposing precisely the ``semantic gap'' we address, but they target
+full formal proofs directly. LeanDojo \citep{yang2023leandojo} and LEGO-Prover
+\citep{wang2023legoprover} use retrieval and growing tactic libraries to make
+neural theorem proving practical, again at the proof level. On the
+verification-engineering side, Isabelle/HOL provides a mature framework for
+reasoning about programs and specifications \citep{schirmer2006verification},
+KeYmaera X demonstrates tactic-based proof for hybrid systems
+\citep{fulton2015keymaera}, and Coq's self-verification of its own type checker
+\citep{sozeau2019coqcoqcorrect} shows that even the checking machinery can be
+made trustworthy.
+
+Our contribution is to occupy the middle layer that these works leave open:
+a typed, checkable specification that is cheaper than a full proof but more
+rigorous than informal reasoning, with explicit bidirectional consistency
+between the natural-language input, the \IR{}, and the formal target.
+
+\section{Applications}
+\label{sec:applications}
+
+The three-layer model is not tied to any single prover or domain. We sketch
+three applications.
+
+\begin{itemize}
+\item \textbf{Automated theorem proving.} The \IR{} serves as a
+\emph{specification first, proof second} front end: a system formalises a
+problem into \IR{}, checks the specification, and only then invokes the prover
+on the reduced obligations, reducing wasted proof search
+\citep{yang2023leandojo}.
+\item \textbf{Problem solving.} For word problems on GSM8K/MATH, the \IR{}
+acts as a ``show your work'' layer: a solution is accepted only if it
+type-checks, giving a lightweight correctness signal without a full formal
+proof \citep{cobbe2021training, hendrycks2021measuring}.
+\item \textbf{AI-assisted education.} Because the \IR{} localises failures to
+specific subterms, it can produce targeted feedback---``this step divided by a
+quantity that could be zero''---which is more instructive than a binary
+right/wrong verdict.
+\end{itemize}
+\section{Experimental Design}
+\label{sec:experiments}
+
+We design a small, reproducible evaluation that isolates the effect of the
+semantic-specification layer. Following ProofNet and LeanDojo conventions
+\citep{azerbayev2023proofnet, yang2023leandojo}, we report three rates on a
+sample of GSM8K and MATH problems
+\citep{cobbe2021training, hendrycks2021measuring}.
+
+\begin{description}[leftmargin=2.2em]
+\item[Autoformalization rate.] The fraction of problems for which the model
+produces a well-typed \IR{} from the natural-language statement
+\citep{wu2022autoformalization}.
+\item[Type-check rate.] The fraction of proposed \IR{} terms that pass the
+deterministic checker (Section~\ref{sec:ir}).
+\item[Proof rate.] The fraction of proof obligations discharged by the target
+prover (Lean), the metric used by neural theorem provers
+\citep{wang2023legoprover, yang2023leandojo}.
+\end{description}
+
+We also measure the \emph{consistency} between the final answer accepted by the
+\IR{} and the ground-truth answer, and we record the number of rejected
+proposals per problem as a cost signal. The primary comparison is
+\emph{ablation}: the same model with and without the \IR{} type-check gate, to
+test the hypothesis that the gate raises reasoning correctness without
+requiring a full proof.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\textbf{Scope.} Our \IR{} currently covers arithmetic and elementary algebra
+sorts; richer domains (analysis, geometry, hybrid systems
+\citep{fulton2015keymaera}) require extending the sort system and operational
+semantics, which we treat as future work.
+
+\textbf{Limitations.} The compiler from natural language to \IR{} is itself an
+LLM and can mis-specify; the bidirectional-consistency check mitigates but does
+not eliminate this risk. Type-checking guarantees that a term is
+\emph{well-typed}, not that it is \emph{the intended} term. Full assurance
+still requires the proof layer \citep{sozeau2019coqcoqcorrect}.
+
+\textbf{Ethics.} We do not claim that the framework makes AI mathematics
+infallible. It lowers, but does not remove, the risk of confident incorrect
+answers; in high-stakes settings a human review of the \IR{} remains advisable.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We argued that reliable AI mathematics needs a checkable intermediate layer
+between fluent generation and costly formal proof, and we made that layer
+concrete as a typed intermediate representation with an operational semantics,
+composable constraints, and bidirectional consistency checks. The framework
+recasts the reliability question from ``does the model sound right'' to ``does
+the specification type-check and reduce to a proof obligation,'' which is
+mechanically decidable one level before full proof. Our evaluation protocol on
+GSM8K and MATH is designed to measure whether this discipline measurably
+improves reasoning correctness at lower cost than complete formalization. We
+believe the semantic-specification layer is a necessary, and currently
+under-investigated, building block for trustworthy AI mathematics.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
+
