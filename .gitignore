@@ -1,0 +1,14 @@
+# 构建工具与原始材料（体积大，不随仓库提交）
+tools/
+挑战_C2 AI for Math 论文_8ot0ji_材料/
+
+# LaTeX 编译中间产物
+*.aux
+*.log
+*.blg
+*.bbl
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
